@@ -38,7 +38,7 @@ func callLoopingAPI(url string, interval int) {
 		defer res.Body.Close()
 		get_response := time.Now().In(loc)
 		client_elapsed := get_response.Sub(start_request).Microseconds()
-		fmt.Printf(get_response.Sub(start_request).String())
+		// fmt.Printf(get_response.Sub(start_request).String())
 		fmt.Printf(fmt.Sprintf("uuid: %s, severity: %s, start_request: %s, get_response: %s, client_elapsed: %s\n",
 			client_uuid,
 			"WARNING",
