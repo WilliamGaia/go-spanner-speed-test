@@ -1,0 +1,16 @@
+logging:
+  receivers:
+    custom_file2:
+      type: files
+      include_paths:
+      - /home/william_wang/request.log
+  processors:
+    parse_custom_log:
+      type: parse_regex
+      field: message
+      regex: "uuid: (?<uuid>[^,]*), severity: (?<severity>[^,]*), start_request: (?<start_request>[^,]*), get_response: (?<get_response>[^,]*), client_elapsed: (?<client_elapsed>[^,]*)"
+  service:
+    pipelines:
+      pipeline2:
+        receivers: [custom_file2]
+        processors: [parse_custom_log]
