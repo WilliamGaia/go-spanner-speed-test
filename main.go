@@ -7,6 +7,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -36,12 +39,17 @@ func (e Entry) String() string {
 	return string(out)
 }
 
-func queryWithParameter(w io.Writer, client *spanner.Client) error {
+var loc *time.Location
+var client *spanner.Client
+
+func queryWithParameter(w io.Writer, resultChan chan<- string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	// return nil
 	ctx := context.Background()
 
 	stmt := spanner.Statement{
 		SQL: `select registerFrom, sum(policyAcceptance) as policyAcceptance_sum
-					  from User 
+					  from User_partial 
 					  where registerFrom=@p1
 					  and registerTime>= @p2 and registerTime<= @p3
 					  group by registerFrom;`,
@@ -54,51 +62,47 @@ func queryWithParameter(w io.Writer, client *spanner.Client) error {
 	iter := client.Single().Query(ctx, stmt)
 	defer iter.Stop()
 
+	var result strings.Builder
+
 	for {
 		row, err := iter.Next()
 		if err == iterator.Done {
-			return nil
+			break
 		}
 		if err != nil {
-			return err
+			resultChan <- fmt.Sprintf("Error: %v", err)
+			return
 		}
 		var registerFrom, policyAcceptance_sum int64
 		if err := row.Columns(&registerFrom, &policyAcceptance_sum); err != nil {
-			return err
+			resultChan <- fmt.Sprintf("Error: %v", err)
+			return
 		}
-		fmt.Fprintf(w, "%d %d\n", registerFrom, policyAcceptance_sum)
+		fmt.Fprintf(&result, "registerForm: %d, policyAcceptance_sum: %d\n", registerFrom, policyAcceptance_sum)
 	}
-
+	resultChan <- result.String()
 }
 
 func startTest(c *gin.Context) {
-	// project := os.Getenv("PROJECT")
-	// instance := os.Getenv("INSTANCE")
-	// database := os.Getenv("DATABASE")
-	loc, _ := time.LoadLocation("Asia/Taipei")
 	start := time.Now().In(loc)
-
-	// //create connection object
-	// databaseName := fmt.Sprintf("projects/%s/instances/%s/databases/%s", project, instance, database)
-	// ctx := context.Background()
-	// client, err := spanner.NewClient(ctx, databaseName)
-	// if err != nil {
-	// 	fmt.Fprintf(os.Stdout, "%s \n", err)
-	// }
-	// defer client.Close()
+	resultChan := make(chan string, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
 
 	//timediff for query
 	start_query := time.Now().In(loc)
-	// queryWithParameter(os.Stdout, client)
+	go queryWithParameter(os.Stdout, resultChan, &wg)
+	wg.Wait()
+	result := <-resultChan
+
+	if strings.HasPrefix(result, "Error:") {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": result})
+		return
+	}
+
 	elapsed_query := time.Since(start_query).Microseconds()
 	elapsed := time.Since(start).Microseconds()
-	// fmt.Fprintf(
-	// 	os.Stdout,
-	// 	"start: %s, totaltime: %s, querytime: %s\n",
-	// 	start.Format(time.RFC3339),
-	// 	elapsed,
-	// 	elapsed_query)
-	fmt.Println(time.Since(start).String())
+
 	log.Println(Entry{
 		Severity:       "WARNING",
 		UUID:           c.Request.Header["X-Client-Uuid"][0],
@@ -107,15 +111,28 @@ func startTest(c *gin.Context) {
 		EndTime:        fmt.Sprintf("%v", elapsed_query),
 		ElapsedTime:    fmt.Sprintf("%v", elapsed),
 	})
-
-	c.IndentedJSON(http.StatusOK, nil)
+	defer c.IndentedJSON(http.StatusOK, result)
 }
 
 func init() {
-	// Disable log prefixes such as the default timestamp.
-	// Prefix text prevents the message from being parsed as JSON.
-	// A timestamp is added when shipping logs to Cloud Logging.
 	log.SetFlags(0)
+	project := os.Getenv("PROJECT")
+	instance := os.Getenv("INSTANCE")
+	database := os.Getenv("DATABASE")
+	if project == "" {
+		project = "williamlab"
+		instance = "go-spanner-test-instance"
+		database = "go-spanner-db"
+	}
+	databaseName := fmt.Sprintf("projects/%s/instances/%s/databases/%s", project, instance, database)
+	loc, _ = time.LoadLocation("Asia/Taipei")
+	//create connection object
+	ctx := context.Background()
+	var err error
+	client, err = spanner.NewClient(ctx, databaseName)
+	if err != nil {
+		fmt.Fprintf(os.Stdout, "%s \n", err)
+	}
 }
 
 func main() {
