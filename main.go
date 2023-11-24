@@ -56,7 +56,7 @@ func queryWithParameter(w io.Writer, resultChan chan<- string, wg *sync.WaitGrou
 		Params: map[string]interface{}{
 			"p1": 5,
 			"p2": "2020-01-31T14:58:21.200Z",
-			"p3": "2020-01-31T14:58:31.200Z",
+			"p3": "2024-01-31T14:58:31.200Z",
 		},
 	}
 	iter := client.Single().Query(ctx, stmt)
@@ -132,6 +132,21 @@ func init() {
 	client, err = spanner.NewClient(ctx, databaseName)
 	if err != nil {
 		fmt.Fprintf(os.Stdout, "%s \n", err)
+	}
+	//handle initial session
+	stmt := spanner.Statement{
+		SQL: `select 1;`,
+	}
+	iter := client.Single().Query(ctx, stmt)
+	err = iter.Do(func(row *spanner.Row) error {
+		if err := row.Columns(nil); err != nil {
+			return err
+		}
+		return nil
+	})
+
+	if err != nil {
+		fmt.Fprintf(os.Stdout, "Error executing initial query: %v\n", err)
 	}
 }
 
