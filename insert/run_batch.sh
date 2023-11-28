@@ -3,7 +3,7 @@
 command="/Users/wangyuguang/Documents/vsop_spanner_test/insert/inserter.go"
 batchsize="250"
 num_instances=20
-cmd_rounds=180
+cmd_rounds=200
 
 for ((i=0; i<=$cmd_rounds; i++))
 do
