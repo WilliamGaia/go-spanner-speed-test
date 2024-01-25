@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
@@ -25,6 +26,7 @@ type Entry struct {
 	StartTime      string `json:"api_call_start"`
 	EndTime        string `json:"api_call_response"`
 	ElapsedTime    string `json:"api_process_elapsed"`
+	ScannedRow     string `json:"row_scanned"`
 }
 
 // String renders an entry structure to the JSON format expected by Cloud Logging.
@@ -42,27 +44,40 @@ func (e Entry) String() string {
 var loc *time.Location
 var client *spanner.Client
 
-func queryWithParameter(w io.Writer, resultChan chan<- string, wg *sync.WaitGroup) {
+func queryWithParameter(w io.Writer, resultChan chan<- string, rowChan chan<- string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	// return nil
 	ctx := context.Background()
 
+	queryCases := []struct {
+		RegisterFrom int
+		StartTime    string
+		EndTime      string
+		QuerySQL     string
+	}{
+		{5, "2020-01-31T14:58:21.200Z", "2024-01-31T14:58:31.200Z", "select registerFrom, sum(policyAcceptance) from User_partial where registerFrom=@p1 and registerTime>= @p2 and registerTime<= @p3 group by registerFrom;"},
+		{1, "2023-11-28T07:23:16.501888Z", "2023-11-28T07:27:16.501888Z", "select registerFrom, sum(policyAcceptance) from User_partial where registerFrom=@p1 and registerTime>= @p2 and registerTime<= @p3 group by registerFrom;"},
+		{2, "2023-11-28T07:23:16.501888Z", "2023-11-28T07:23:29.918698Z", "select registerFrom, sum(policyAcceptance) from User_partial where registerFrom=@p1 and registerTime>= @p2 and registerTime<= @p3 group by registerFrom;"},
+	}
+
+	randSource := rand.NewSource(time.Now().UnixNano())
+	randGen := rand.New(randSource)
+
+	selectedCase := queryCases[randGen.Intn(len(queryCases))]
+
 	stmt := spanner.Statement{
-		SQL: `select registerFrom, sum(policyAcceptance) as policyAcceptance_sum
-					  from User_partial 
-					  where registerFrom=@p1
-					  and registerTime>= @p2 and registerTime<= @p3
-					  group by registerFrom;`,
+		SQL: selectedCase.QuerySQL,
 		Params: map[string]interface{}{
-			"p1": 5,
-			"p2": "2020-01-31T14:58:21.200Z",
-			"p3": "2024-01-31T14:58:31.200Z",
+			"p1": selectedCase.RegisterFrom,
+			"p2": selectedCase.StartTime,
+			"p3": selectedCase.EndTime,
 		},
 	}
 	iter := client.Single().Query(ctx, stmt)
 	defer iter.Stop()
 
 	var result strings.Builder
+	var rowCounts string
 
 	for {
 		row, err := iter.Next()
@@ -78,23 +93,36 @@ func queryWithParameter(w io.Writer, resultChan chan<- string, wg *sync.WaitGrou
 			resultChan <- fmt.Sprintf("Error: %v", err)
 			return
 		}
+
+		switch selectedCase.RegisterFrom {
+		case 5:
+			rowCounts = "10w"
+		case 1:
+			rowCounts = "1w"
+		case 2:
+			rowCounts = "100"
+		default:
+			rowCounts = "unknown"
+		}
 		fmt.Fprintf(&result, "registerForm: %d, policyAcceptance_sum: %d\n", registerFrom, policyAcceptance_sum)
 	}
 	resultChan <- result.String()
+	rowChan <- rowCounts
 }
 
 func startTest(c *gin.Context) {
 	start := time.Now().In(loc)
 	resultChan := make(chan string, 1)
+	rowChan := make(chan string, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 
 	//timediff for query
 	start_query := time.Now().In(loc)
-	go queryWithParameter(os.Stdout, resultChan, &wg)
+	go queryWithParameter(os.Stdout, resultChan, rowChan, &wg)
 	wg.Wait()
 	result := <-resultChan
-
+	scanRow := <-rowChan
 	if strings.HasPrefix(result, "Error:") {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": result})
 		return
@@ -110,6 +138,7 @@ func startTest(c *gin.Context) {
 		StartTime:      start_query.String(),
 		EndTime:        fmt.Sprintf("%v", elapsed_query),
 		ElapsedTime:    fmt.Sprintf("%v", elapsed),
+		ScannedRow:     scanRow,
 	})
 	defer c.IndentedJSON(http.StatusOK, result)
 }
